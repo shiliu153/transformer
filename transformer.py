@@ -341,7 +341,6 @@ def translate_sentence(sentence, src_vocab, trg_vocab, model, src_tokenizer, dev
             break
 
     trg_tokens = [trg_vocab.itos[i] for i in trg_indexes if i in trg_vocab.itos]
-    # 移除 <SOS> 和 <EOS>
     if trg_tokens and trg_tokens[0] == "<SOS>":
         trg_tokens = trg_tokens[1:]
     if trg_tokens and trg_tokens[-1] == "<EOS>":
@@ -360,16 +359,15 @@ if __name__ == '__main__':
     DROPOUT = 0.1
     MAX_LEN = 100
     LEARNING_RATE = 0.0005
-    BATCH_SIZE = 64 # 根据您的 GPU 内存调整
-    NUM_EPOCHS = 10 # 为了演示，减少 epoch 数量
+    BATCH_SIZE = 64
+    NUM_EPOCHS = 10
     CLIP = 1
-    FREQ_THRESHOLD = 5 # 词汇表构建的频率阈值
-    DATA_SUBSET_FRACTION = 0.01 # 使用更小的数据子集进行快速测试，例如1%
+    FREQ_THRESHOLD = 5
+    DATA_SUBSET_FRACTION = 0.01
 
-    # --- 文件和目录路径 ---
     data_dir = './data/traindata'
-    model_save_dir = './saved_models' # 建议将模型和词汇表保存在单独的目录
-    os.makedirs(model_save_dir, exist_ok=True) # 创建保存目录
+    model_save_dir = './saved_models'
+    os.makedirs(model_save_dir, exist_ok=True)
 
     train_zh_filepath = os.path.join(data_dir, 'train.zh')
     train_en_filepath = os.path.join(data_dir, 'train.en')
@@ -388,13 +386,11 @@ if __name__ == '__main__':
     val_data_zh_raw = load_sentences_from_file(val_zh_filepath)
     val_data_en_raw = load_sentences_from_file(val_en_filepath)
 
-    # --- 数据子集处理 (可选，用于快速测试) ---
     if 0.0 < DATA_SUBSET_FRACTION < 1.0:
         print(f"Using {DATA_SUBSET_FRACTION*100:.0f}% of the loaded data.")
 
         train_zh_len = len(train_data_zh_raw)
         train_en_len = len(train_data_en_raw)
-        # 确保两个列表长度一致
         min_train_len = min(train_zh_len, train_en_len)
         train_data_zh_raw = train_data_zh_raw[:min_train_len]
         train_data_en_raw = train_data_en_raw[:min_train_len]
@@ -444,19 +440,17 @@ if __name__ == '__main__':
     src_vocab = Vocab(freq_threshold=FREQ_THRESHOLD)
     trg_vocab = Vocab(freq_threshold=FREQ_THRESHOLD)
 
-    # 使用训练数据构建词汇表
-    # 确保 train_data_zh_raw 和 train_data_en_raw 在这里是非空的
     if train_data_zh_raw:
         src_vocab.build_vocab(train_data_zh_raw, src_tokenizer_fn)
-        torch.save(src_vocab, src_vocab_path) # 保存源语言词汇表
+        torch.save(src_vocab, src_vocab_path)
         print(f"Source vocabulary saved to '{src_vocab_path}'")
     else:
         print("Skipping source vocab build and save due to empty training data.")
-        # 如果没有训练数据，后续步骤可能会失败，这里应该考虑退出或使用预加载的词汇表
+
 
     if train_data_en_raw:
         trg_vocab.build_vocab(train_data_en_raw, trg_tokenizer_fn)
-        torch.save(trg_vocab, trg_vocab_path) # 保存目标语言词汇表
+        torch.save(trg_vocab, trg_vocab_path)
         print(f"Target vocabulary saved to '{trg_vocab_path}'")
     else:
         print("Skipping target vocab build and save due to empty training data.")
@@ -478,7 +472,6 @@ if __name__ == '__main__':
         print("Consider reducing freq_threshold or using more data.")
         if not train_data_zh_raw or not train_data_en_raw:
              print("Continuing with potentially small vocab due to empty or very small dataset.")
-        # 可以考虑在这里添加一个更强的检查，如果词汇表真的太小，可能无法训练
         if INPUT_DIM <= min_vocab_size and len(train_data_zh_raw) > 0 : # 有数据但词汇表小
             print("Problem: Source vocab is too small despite having training data. Check tokenization and freq_threshold.")
         if OUTPUT_DIM <= min_vocab_size and len(train_data_en_raw) > 0: # 有数据但词汇表小
@@ -486,10 +479,9 @@ if __name__ == '__main__':
 
 
     print("Creating datasets and dataloaders...")
-    # 确保 val_data_zh_raw 和 val_data_en_raw 也是有效的，如果它们是空的，DataLoader 会出问题
     if not val_data_zh_raw or not val_data_en_raw:
         print("Warning: Validation data is empty. Evaluation will not be performed.")
-        val_iterator = None # 或者创建一个空的 DataLoader
+        val_iterator = None
     else:
         val_dataset = TranslationDataset(val_data_zh_raw, val_data_en_raw, src_vocab, trg_vocab,
                                          src_tokenizer_fn, trg_tokenizer_fn, MAX_LEN)
@@ -500,13 +492,11 @@ if __name__ == '__main__':
                                        src_tokenizer_fn, trg_tokenizer_fn, MAX_LEN)
 
     num_workers_to_use = 0
-    if os.name == 'posix': # num_workers > 0 在 Windows 上有时会有问题
+    if os.name == 'posix':
         num_workers_to_use = 2
 
     train_iterator = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=num_workers_to_use)
 
-
-    # 初始化模型
     print("Initializing model...")
     enc = Encoder(INPUT_DIM, D_MODEL, NUM_ENCODER_LAYERS, NUM_HEADS, D_FF, DROPOUT, MAX_LEN, device)
     dec = Decoder(OUTPUT_DIM, D_MODEL, NUM_DECODER_LAYERS, NUM_HEADS, D_FF, DROPOUT, MAX_LEN, device)
@@ -524,30 +514,27 @@ if __name__ == '__main__':
     for epoch in range(NUM_EPOCHS):
         train_loss = train_epoch(model, train_iterator, optimizer, criterion, CLIP)
 
-        if val_iterator: # 仅当有验证数据时才进行评估
+        if val_iterator:
             valid_loss = evaluate_epoch(model, val_iterator, criterion)
             print(f'Epoch: {epoch + 1:02} | Train Loss: {train_loss:.3f} | Val. Loss: {valid_loss:.3f}')
             if valid_loss < best_valid_loss:
                 best_valid_loss = valid_loss
                 torch.save(model.state_dict(), model_save_path)
                 print(f"Epoch {epoch + 1}: New best validation loss: {valid_loss:.3f}. Model saved to '{model_save_path}'")
-        else: # 没有验证数据，只打印训练损失，并保存每轮的模型（或最后一轮）
+        else:
             print(f'Epoch: {epoch + 1:02} | Train Loss: {train_loss:.3f} | (No validation)')
-            # 如果没有验证集，可以考虑每轮都保存或只保存最后一轮的模型
-            # torch.save(model.state_dict(), model_save_path.replace(".pt", f"_epoch{epoch+1}.pt"))
-            if epoch == NUM_EPOCHS -1: # 保存最后一轮的模型
+            if epoch == NUM_EPOCHS -1:
                  torch.save(model.state_dict(), model_save_path)
                  print(f"Training finished. Model saved to '{model_save_path}' (last epoch).")
 
 
-    if not val_iterator and NUM_EPOCHS > 0: # 如果没有验证，确保模型被保存了
-        if not os.path.exists(model_save_path): # 如果因为某种原因最后一轮没保存
+    if not val_iterator and NUM_EPOCHS > 0:
+        if not os.path.exists(model_save_path):
             torch.save(model.state_dict(), model_save_path)
             print(f"Final model state saved to '{model_save_path}' as no validation was performed.")
 
     print("Training finished.")
 
-    # 加载最佳模型进行测试 (如果之前有保存)
     try:
         if os.path.exists(model_save_path):
             model.load_state_dict(torch.load(model_save_path, map_location=device))
