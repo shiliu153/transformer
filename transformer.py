@@ -1,8 +1,7 @@
 import math
-import os  # 确保导入 os 模块
+import os
 from collections import Counter
-
-import jieba  # 用于中文分词
+import jieba
 import torch
 import torch.nn as nn
 import torch.optim as optim
