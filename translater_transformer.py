@@ -1,63 +1,36 @@
 import torch
 import torch.nn as nn
 import math
-import jieba
 import os
-from collections import Counter
-from tqdm import tqdm
+import jieba
 
-# 0. 设备配置
+
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Using device: {device}")
 
-# 1. 辅助函数：从文件加载句子 (用于重建词汇表)
-def load_sentences_from_file(filepath):
-    sentences = []
-    print(f"Loading sentences from {filepath} for vocabulary...")
-    if not os.path.exists(filepath):
-        print(f"Error: File not found at {filepath}. Vocabulary might be incomplete or incorrect.")
-        return []
-    with open(filepath, 'r', encoding='utf-8') as f:
-        for line in tqdm(f, desc=f"Reading {os.path.basename(filepath)} for vocab"):
-            sentences.append(line.strip())
-    print(f"Loaded {len(sentences)} sentences from {filepath}.")
-    return sentences
-
-# 2. 数据处理类
+# --- 词汇表类 (与 transformer.py 中的定义相同) ---
 class Vocab:
-    def __init__(self, freq_threshold=2):
+    def __init__(self, freq_threshold=2): # freq_threshold 在加载时无关紧要
         self.itos = {0: "<PAD>", 1: "<SOS>", 2: "<EOS>", 3: "<UNK>"}
         self.stoi = {v: k for k, v in self.itos.items()}
-        self.freq_threshold = freq_threshold
+        # build_vocab 和 __len__ 在加载预训练词汇表时不需要完全一样
+        # 但为了torch.load能正确反序列化，类结构应匹配
 
     def __len__(self):
         return len(self.itos)
-
-    def build_vocab(self, sentence_list, tokenizer):
-        frequencies = Counter()
-        idx = len(self.itos)
-        print("Building vocabulary...")
-        for sentence in tqdm(sentence_list, desc="Processing sentences for vocab"):
-            frequencies.update(tokenizer(sentence))
-        for word, freq in frequencies.items():
-            if freq >= self.freq_threshold:
-                if word not in self.stoi:
-                    self.stoi[word] = idx
-                    self.itos[idx] = word
-                    idx += 1
-        print(f"Vocabulary built. Size: {len(self.itos)}")
 
     def numericalize(self, text, tokenizer):
         tokenized_text = tokenizer(text)
         return [self.stoi.get(token, self.stoi["<UNK>"]) for token in tokenized_text]
 
+# --- 分词函数 (与 transformer.py 中的定义相同) ---
 def tokenize_zh(text):
     return jieba.lcut(text)
 
 def tokenize_en(text):
     return text.lower().split()
 
-# 3. 模型组件 (与训练时定义一致)
+# --- 模型组件 (与 transformer.py 中的定义相同) ---
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=5000):
         super().__init__()
@@ -72,7 +45,7 @@ class PositionalEncoding(nn.Module):
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        x = x * math.sqrt(self.d_model) # 与训练脚本中的 Encoder/Decoder 内部的 PositionalEncoding 应用方式一致
+        x = x * math.sqrt(self.d_model) # 应用缩放
         x = x + self.pe[:, :x.size(1), :]
         return self.dropout(x)
 
@@ -162,15 +135,14 @@ class Encoder(nn.Module):
         self.device = device
         self.d_model = d_model
         self.tok_embedding = nn.Embedding(input_vocab_size, d_model)
-        self.pos_embedding = PositionalEncoding(d_model, dropout, max_len) # d_model is passed here
+        self.pos_embedding = PositionalEncoding(d_model, dropout, max_len)
         self.layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout)
                                      for _ in range(num_layers)])
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, src, src_mask):
         src_emb = self.tok_embedding(src)
-        # PositionalEncoding's forward method handles the scaling by sqrt(d_model)
-        src_emb = self.pos_embedding(src_emb)
+        src_emb = self.pos_embedding(src_emb) # 应用位置编码
         for layer in self.layers:
             src_emb = layer(src_emb, src_mask)
         return src_emb
@@ -181,7 +153,7 @@ class Decoder(nn.Module):
         self.device = device
         self.d_model = d_model
         self.tok_embedding = nn.Embedding(output_vocab_size, d_model)
-        self.pos_embedding = PositionalEncoding(d_model, dropout, max_len) # d_model is passed here
+        self.pos_embedding = PositionalEncoding(d_model, dropout, max_len)
         self.layers = nn.ModuleList([DecoderLayer(d_model, num_heads, d_ff, dropout)
                                      for _ in range(num_layers)])
         self.fc_out = nn.Linear(d_model, output_vocab_size)
@@ -189,8 +161,7 @@ class Decoder(nn.Module):
 
     def forward(self, trg, enc_src, trg_mask, src_mask):
         trg_emb = self.tok_embedding(trg)
-        # PositionalEncoding's forward method handles the scaling by sqrt(d_model)
-        trg_emb = self.pos_embedding(trg_emb)
+        trg_emb = self.pos_embedding(trg_emb) # 应用位置编码
         for layer in self.layers:
             trg_emb, attention = layer(trg_emb, enc_src, trg_mask, src_mask)
         output = self.fc_out(trg_emb)
@@ -223,38 +194,34 @@ class Transformer(nn.Module):
         output, attention = self.decoder(trg, enc_src, trg_mask, src_mask)
         return output, attention
 
-# 4. 翻译函数
-def translate_sentence(sentence_text, src_vocab_obj, trg_vocab_obj, model_instance, src_tokenizer_fn,
-                       device_to_use, max_output_len=100):
-    model_instance.eval()
-
-    if isinstance(sentence_text, str):
-        tokens_numericalized = src_vocab_obj.numericalize(sentence_text, src_tokenizer_fn)
-    elif isinstance(sentence_text, list): # 假设已经是分词后的列表
-        tokens_numericalized = [src_vocab_obj.stoi.get(token, src_vocab_obj.stoi["<UNK>"]) for token in sentence_text]
+# --- 翻译函数 (与 transformer.py 中的定义相同) ---
+def translate_sentence(sentence, src_vocab, trg_vocab, model, src_tokenizer, device, max_len=100):
+    model.eval()
+    if isinstance(sentence, str):
+        tokens_numericalized = src_vocab.numericalize(sentence, src_tokenizer)
+    elif isinstance(sentence, list):
+        tokens_numericalized = [src_vocab.stoi.get(token, src_vocab.stoi["<UNK>"]) for token in sentence]
     else:
-        raise ValueError("Input 'sentence_text' must be a string or a list of tokens.")
+        raise ValueError("Input 'sentence' must be a string or a list of tokens.")
 
-    tokens = [src_vocab_obj.stoi["<SOS>"]] + tokens_numericalized + [src_vocab_obj.stoi["<EOS>"]]
-    src_tensor = torch.LongTensor(tokens).unsqueeze(0).to(device_to_use)
-    src_mask = model_instance.make_src_mask(src_tensor)
+    tokens = [src_vocab.stoi["<SOS>"]] + tokens_numericalized + [src_vocab.stoi["<EOS>"]]
+    src_tensor = torch.LongTensor(tokens).unsqueeze(0).to(device)
+    src_mask = model.make_src_mask(src_tensor)
 
     with torch.no_grad():
-        enc_src = model_instance.encoder(src_tensor, src_mask)
+        enc_src = model.encoder(src_tensor, src_mask)
 
-    trg_indexes = [trg_vocab_obj.stoi["<SOS>"]]
-    for i in range(max_output_len):
-        trg_tensor = torch.LongTensor(trg_indexes).unsqueeze(0).to(device_to_use)
-        trg_mask = model_instance.make_trg_mask(trg_tensor)
+    trg_indexes = [trg_vocab.stoi["<SOS>"]]
+    for i in range(max_len):
+        trg_tensor = torch.LongTensor(trg_indexes).unsqueeze(0).to(device)
+        trg_mask = model.make_trg_mask(trg_tensor)
         with torch.no_grad():
-            output, attention = model_instance.decoder(trg_tensor, enc_src, trg_mask, src_mask)
+            output, attention = model.decoder(trg_tensor, enc_src, trg_mask, src_mask)
         pred_token = output.argmax(2)[:, -1].item()
         trg_indexes.append(pred_token)
-        if pred_token == trg_vocab_obj.stoi["<EOS>"]:
+        if pred_token == trg_vocab.stoi["<EOS>"]:
             break
-
-    trg_tokens = [trg_vocab_obj.itos[i] for i in trg_indexes if i in trg_vocab_obj.itos]
-    # 移除 <SOS> 和 <EOS> (如果存在)
+    trg_tokens = [trg_vocab.itos[i] for i in trg_indexes if i in trg_vocab.itos]
     if trg_tokens and trg_tokens[0] == "<SOS>":
         trg_tokens = trg_tokens[1:]
     if trg_tokens and trg_tokens[-1] == "<EOS>":
@@ -262,116 +229,122 @@ def translate_sentence(sentence_text, src_vocab_obj, trg_vocab_obj, model_instan
     return trg_tokens, attention
 
 
-# 5. 主程序
 if __name__ == '__main__':
-    # --- 配置参数 (必须与训练时一致) ---
+
     D_MODEL = 256
     NUM_HEADS = 8
     NUM_ENCODER_LAYERS = 3
     NUM_DECODER_LAYERS = 3
     D_FF = 512
     DROPOUT = 0.1
-    MAX_LEN = 100  # 用于 PositionalEncoding 和翻译函数中的 max_output_len
-    FREQ_THRESHOLD = 5 # 用于重建词汇表
+    MAX_LEN = 100
 
     # --- 文件路径 ---
-    # !! 修改为你实际的模型路径 !!
-    model_load_path = 'transformer-nmt-model-best-ai-challenger.pt'
-    # !! 修改为你的原始训练数据路径 (用于重建词汇表) !!
-    # 你只需要提供训练时用于构建词汇表的文件
-    data_dir = './data/traindata' # 假设和训练脚本中的目录结构一致
-    train_zh_filepath = os.path.join(data_dir, 'train.zh')
-    train_en_filepath = os.path.join(data_dir, 'train.en')
+    model_save_dir = './saved_models'
+    src_vocab_path = os.path.join(model_save_dir, 'src_vocab.pth')
+    trg_vocab_path = os.path.join(model_save_dir, 'trg_vocab.pth')
+    model_path = os.path.join(model_save_dir, 'transformer-nmt-model-best.pt')
 
-    # --- 初始化分词器 ---
-    print("Initializing tokenizers...")
-    try:
-        jieba.lcut("预热jieba", cut_all=False) # 尝试初始化jieba
-        print("Jieba initialized.")
-        src_tokenizer_fn = tokenize_zh
-    except Exception as e:
-        print(f"Error initializing jieba: {e}. Jieba is required for Chinese tokenization.")
-        print("Please ensure jieba is installed and working.")
-        exit()
-    trg_tokenizer_fn = tokenize_en
+    print(f"Using device: {device}")
 
-    # --- 重建词汇表 ---
-    print("Rebuilding vocabularies from training data...")
-    # 加载原始训练数据以构建词汇表
-    # 注意：这里只加载用于构建词汇表的数据，不需要全量加载进行训练
-    # 如果你的训练数据非常大，可以考虑保存和加载 Vocab 对象本身，而不是每次重建
-    train_data_zh_for_vocab = load_sentences_from_file(train_zh_filepath)
-    train_data_en_for_vocab = load_sentences_from_file(train_en_filepath)
-
-    if not train_data_zh_for_vocab or not train_data_en_for_vocab:
-        print("Could not load training data for vocabulary building. Exiting.")
+    # --- 加载模型和词汇表 ---
+    print(f"Loading source vocabulary from {src_vocab_path}...")
+    if not os.path.exists(src_vocab_path):
+        print(f"Error: Source vocabulary file not found at {src_vocab_path}")
         exit()
 
-    src_vocab = Vocab(freq_threshold=FREQ_THRESHOLD)
-    trg_vocab = Vocab(freq_threshold=FREQ_THRESHOLD)
-    src_vocab.build_vocab(train_data_zh_for_vocab, src_tokenizer_fn)
-    trg_vocab.build_vocab(train_data_en_for_vocab, trg_tokenizer_fn)
+    src_vocab = torch.load(src_vocab_path, map_location=device, weights_only=False)
+    print(f"Source vocabulary loaded. Size: {len(src_vocab)}")
 
-    print(f"Source Vocab Size: {len(src_vocab)}")
-    print(f"Target Vocab Size: {len(trg_vocab)}")
+    print(f"Loading target vocabulary from {trg_vocab_path}...")
+    if not os.path.exists(trg_vocab_path):
+        print(f"Error: Target vocabulary file not found at {trg_vocab_path}")
+        exit()
 
-    SRC_PAD_IDX = src_vocab.stoi["<PAD>"]
-    TRG_PAD_IDX = trg_vocab.stoi["<PAD>"]
+    trg_vocab = torch.load(trg_vocab_path, map_location=device, weights_only=False)
+    print(f"Target vocabulary loaded. Size: {len(trg_vocab)}")
+
     INPUT_DIM = len(src_vocab)
     OUTPUT_DIM = len(trg_vocab)
+    SRC_PAD_IDX = src_vocab.stoi["<PAD>"]
+    TRG_PAD_IDX = trg_vocab.stoi["<PAD>"]
 
-    if INPUT_DIM <= 4 or OUTPUT_DIM <= 4: # 检查词汇表大小是否合理
-        print("Warning: Vocabulary size is very small. This might lead to poor translation.")
-        print("Ensure FREQ_THRESHOLD and data paths for vocab building are correct.")
+    min_vocab_size = 4
+    if INPUT_DIM <= min_vocab_size or OUTPUT_DIM <= min_vocab_size:
+        print(f"Error: Loaded vocabulary size is too small (SRC: {INPUT_DIM}, TRG: {OUTPUT_DIM}). Cannot proceed.")
+        exit()
 
-    # --- 初始化模型 ---
     print("Initializing model structure...")
-    encoder = Encoder(INPUT_DIM, D_MODEL, NUM_ENCODER_LAYERS, NUM_HEADS, D_FF, DROPOUT, MAX_LEN, device)
-    decoder = Decoder(OUTPUT_DIM, D_MODEL, NUM_DECODER_LAYERS, NUM_HEADS, D_FF, DROPOUT, MAX_LEN, device)
-    model = Transformer(encoder, decoder, SRC_PAD_IDX, TRG_PAD_IDX, device).to(device)
+    enc = Encoder(INPUT_DIM, D_MODEL, NUM_ENCODER_LAYERS, NUM_HEADS, D_FF, DROPOUT, MAX_LEN, device)
+    dec = Decoder(OUTPUT_DIM, D_MODEL, NUM_DECODER_LAYERS, NUM_HEADS, D_FF, DROPOUT, MAX_LEN, device)
+    model = Transformer(enc, dec, SRC_PAD_IDX, TRG_PAD_IDX, device).to(device)
 
-    # --- 加载模型权重 ---
-    if not os.path.exists(model_load_path):
-        print(f"Model file not found at '{model_load_path}'. Exiting.")
+
+    print(f"Loading model weights from {model_path}...")
+    if not os.path.exists(model_path):
+        print(f"Error: Model file not found at {model_path}")
         exit()
     try:
-        print(f"Loading model weights from '{model_load_path}'...")
-        model.load_state_dict(torch.load(model_load_path, map_location=device))
+
+        model.load_state_dict(torch.load(model_path, map_location=device))
         print("Model weights loaded successfully.")
     except Exception as e:
-        print(f"Error loading model weights: {e}")
+        print(f"Error loading model state_dict: {e}")
+        print("Ensure that the model architecture in this script matches the saved model.")
         exit()
 
     model.eval() # 设置为评估模式
 
-    # --- 进行翻译 ---
-    print("\n--- Transformer Translation Service ---")
-    print("Type 'quit' or 'exit' to stop.")
+    src_tokenizer_fn_for_translation = None
+    try:
+        jieba.lcut("预热jieba", cut_all=False) # 确保jieba可用
+        src_tokenizer_fn_for_translation = tokenize_zh
+        print("Using Jieba for Chinese tokenization.")
+    except NameError:
+        print("jieba not available. Ensure it's installed and imported if translating from Chinese.")
+        print("If your source language is not Chinese or uses a different tokenizer, adjust src_tokenizer_fn_for_translation.")
+        exit()
+    except Exception as e:
+        print(f"Error initializing jieba: {e}. Cannot proceed with Chinese tokenization.")
+        exit()
+
+
+    # 测试翻译
+    test_sentences_zh = [
+        "你好 世界",
+        "我 想 看 看 这个 产品",
+        "这 是 一个 测试"
+    ]
+
+    print("\n--- Starting Translation ---")
+    for sentence_str in test_sentences_zh:
+        print(f"\nOriginal (ZH): '{sentence_str}'")
+        translated_tokens, attention = translate_sentence(
+            sentence_str,
+            src_vocab,
+            trg_vocab,
+            model,
+            src_tokenizer_fn_for_translation,
+            device,
+            MAX_LEN
+        )
+        print(f"Translated (EN): {' '.join(translated_tokens)}")
+
+    print("\n--- Translation Finished ---")
+
     while True:
-        try:
-            input_sentence = input("Enter Chinese sentence to translate: ")
-            if input_sentence.lower() in ['quit', 'exit']:
-                break
-            if not input_sentence.strip():
-                continue
-
-            translated_tokens, attention = translate_sentence(
-                input_sentence,
-                src_vocab,
-                trg_vocab,
-                model,
-                src_tokenizer_fn,
-                device,
-                max_output_len=MAX_LEN
-            )
-            print(f"Input (ZH): {input_sentence}")
-            print(f"Translated (EN): {' '.join(translated_tokens)}")
-            print("-" * 20)
-
-        except KeyboardInterrupt:
-            print("\nExiting...")
+        input_sentence = input("\nEnter a Chinese sentence to translate (or 'quit' to exit): ")
+        if input_sentence.lower() == 'quit':
             break
-        except Exception as e:
-            print(f"An error occurred during translation: {e}")
-
-    print("Translation service stopped.")
+        if not input_sentence.strip():
+            continue
+        translated_tokens, _ = translate_sentence(
+            input_sentence,
+            src_vocab,
+            trg_vocab,
+            model,
+            src_tokenizer_fn_for_translation,
+            device,
+            MAX_LEN
+        )
+        print(f"Translated (EN): {' '.join(translated_tokens)}")
