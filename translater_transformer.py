@@ -308,8 +308,6 @@ if __name__ == '__main__':
         print(f"Error initializing jieba: {e}. Cannot proceed with Chinese tokenization.")
         exit()
 
-
-    # 测试翻译
     test_sentences_zh = [
         "你好 世界",
         "我 想 看 看 这个 产品",
