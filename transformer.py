@@ -347,8 +347,28 @@ def translate_sentence(sentence, src_vocab, trg_vocab, model, src_tokenizer, dev
         trg_tokens = trg_tokens[:-1]
     return trg_tokens, attention
 
+# 7. 检查点加载函数
+def load_checkpoint_if_exists(model, model_path, device, force_load=False):
+    # 检查模型文件是否存在
+    if os.path.exists(model_path):
+        message = f"检测到已存在模型: {model_path}"
 
-# 7. 主程序
+        # 如果不强制加载，则询问用户
+        if not force_load:
+            response = input(f"\n{message}，是否加载此模型继续训练? (y/n): ").strip().lower()
+            if response != 'y':
+                return False, "用户选择不加载已有模型，将从头开始训练。"
+
+        try:
+            model.load_state_dict(torch.load(model_path, map_location=device))
+            return True, f"{message}，已成功加载模型参数。"
+        except Exception as e:
+            return False, f"尝试加载模型时出错: {e}，将从头开始训练。"
+    else:
+        return False, f"未检测到已训练模型 ({model_path})，将从头开始训练。"
+
+
+# 8. 主程序
 if __name__ == '__main__':
 
     D_MODEL = 256
@@ -363,7 +383,7 @@ if __name__ == '__main__':
     NUM_EPOCHS = 10
     CLIP = 1
     FREQ_THRESHOLD = 5
-    DATA_SUBSET_FRACTION = 0.01
+    DATA_SUBSET_FRACTION = 0.2
 
     data_dir = './data/traindata'
     model_save_dir = './saved_models'
@@ -509,6 +529,9 @@ if __name__ == '__main__':
     criterion = nn.CrossEntropyLoss(ignore_index=TRG_PAD_IDX)
 
     best_valid_loss = float('inf')
+
+    loaded, load_message = load_checkpoint_if_exists(model, model_save_path, device)
+    print(load_message)
 
     print(f"\nStarting training for {NUM_EPOCHS} epochs...")
     for epoch in range(NUM_EPOCHS):
